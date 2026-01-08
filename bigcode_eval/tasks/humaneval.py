@@ -48,8 +48,11 @@ class GeneralHumanEval(Task):
     DATASET_PATH = "openai_humaneval"
 
     def __init__(self, strip_prompt, k=[1, 10, 100], num_workers=16, timeout=3.0):
+        # Note: Removed "\n#" and "\nif" from stop_words to prevent early stopping
+        # when models add comments or if __name__ == '__main__': blocks
+        # This is particularly important for Qwen Coder models
         super().__init__(
-            stop_words=["\nclass", "\ndef", "\n#", "\n@", "\nprint", "\nif", "\n```", "<file_sep>"],
+            stop_words=["\nclass", "\ndef", "\n@", "\nprint", "\n```", "<file_sep>"],
             requires_execution=True,
         )
         self.strip_prompt = strip_prompt
@@ -64,7 +67,11 @@ class GeneralHumanEval(Task):
     def get_prompt(self, doc):
         """Builds the prompt for the LM to generate from."""
         if self.strip_prompt:
-            return doc["prompt"].strip()
+            # Note: For Qwen Coder models, preserving the trailing newline is important
+            # for proper indentation. Using .rstrip() instead of .strip() to preserve
+            # leading whitespace while removing only trailing whitespace.
+            # However, based on issue #308, we preserve the trailing newline entirely.
+            return doc["prompt"]  # Qwen needs the trailing newline for indentation!
         else:
             return doc["prompt"]
 
@@ -85,7 +92,18 @@ class GeneralHumanEval(Task):
         """
         prompt = self.get_prompt(self.dataset["test"][idx])
         generation = generation[len(prompt) :]
-        return prompt + self._stop_at_stop_token(generation, self.stop_words)
+        generation = prompt + self._stop_at_stop_token(generation, self.stop_words)
+        
+        # Remove if __name__ == '__main__': blocks that some models (e.g., Qwen) may generate
+        # This follows the pattern used in instruct_wizard_humaneval.py
+        if 'if __name__ == "__main__":' in generation:
+            next_line = generation.index('if __name__ == "__main__":')
+            generation = generation[:next_line].rstrip()
+        elif "if __name__ == '__main__':" in generation:
+            next_line = generation.index("if __name__ == '__main__':")
+            generation = generation[:next_line].rstrip()
+        
+        return generation
 
     def process_results(self, generations, references):
         """Takes the list of LM generations and evaluates them against ground truth references,
